@@ -2,10 +2,12 @@ import gym
 import json
 from random import random, randint
 
-slow = False
+slow = True
 env = gym.make("MountainCar-v0")
-VERSION = "V3"
+VERSION = "V4"
 measurements = []
+exploration_rate = 0.0
+dynamic_exploration = False
 episodes = 100
 qvalues = {}
 last_o = None
@@ -16,7 +18,6 @@ path = []
 def take_action(t, o, r):
     global last_a, last_o, qvalues
     act_back, act_none, act_break = range(3)
-    exploration_rate = 0.001
     best_a = get_best_action(o)
     a = randint(0,2) if random() < exploration_rate else best_a
     idx = get_index(o, a)
@@ -30,11 +31,12 @@ def take_action(t, o, r):
 
 def update_done():
     qvalues[get_index(last_o, last_a)] = (0, None)  # set the last reward
-    for i in path[1::-1]:
+    for n, i in enumerate(path[1::-1]):
         o = qvalues[i][1][1:-1]
         best_a = get_best_action(o, True)
         best_q = qvalues[get_index([int(j) for j in o.split(',')], last_a, True)]
-        qvalues[i] = (-1 + best_q[0], '('+o+')')
+        update = (qvalues[i][0] + 0.8**n*(-1 + best_q[0]))/2
+        qvalues[i] = (update, '('+o+')')
 
 
 def get_best_action(o, is_index=False):
@@ -55,21 +57,19 @@ def idx_o(o, no_transform=False):
     else:
         return str((int(o[0] * 100), int(o[1] * 100)))
 
-for _ in range(episodes):
+for i in range(episodes):
     observation = env.reset()
     reward = 0
     done = False
     timesteps = 0
+    if dynamic_exploration: exploration_rate = episodes / (2*(episodes-i))
     while not done:
-        if slow: env.render()
+        if slow and i == episodes-1: env.render()
         action = take_action(timesteps, observation, reward)
         observation, reward, done, info = env.step(action)
         timesteps += 1
-        if slow: print(observation)
-        if slow: print(reward)
-        if slow: print(done)
     update_done()
-    print ("Episode finished after ", timesteps, "timesteps.")
+    print ("Episode {} finished after {} timesteps.".format(i, timesteps))
     measurements.append(timesteps)
 
 avg_timesteps = sum(measurements)/len(measurements)
@@ -78,4 +78,4 @@ print("All {} episodes took {} on average".format(episodes, avg_timesteps))
 
 if not slow:
     with open("results.txt", "a+") as fout:
-        fout.write("{} {} AVG {}\n".format(VERSION, measurements, avg_timesteps))
+        fout.write("{} Exploration Rate {} AVG {} {}\n".format(VERSION, exploration_rate, avg_timesteps, measurements))

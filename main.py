@@ -1,81 +1,118 @@
+import sys
 import gym
-import json
+import operator
 from random import random, randint
 
 slow = True
 env = gym.make("MountainCar-v0")
-VERSION = "V4"
+VERSION = "V1.6"
 measurements = []
 exploration_rate = 0.0
+exploration_decay = 0.999
+decay_rate = 1.0
 dynamic_exploration = False
 episodes = 100
-qvalues = {}
-last_o = None
-last_a = None
+all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
 path = []
+last_action = None
+last_position = None
+last_precise_position = None
+last_speed = None
+last_index = None
 
 
-def take_action(t, o, r):
-    global last_a, last_o, qvalues
-    act_back, act_none, act_break = range(3)
-    best_a = get_best_action(o)
-    a = randint(0,2) if random() < exploration_rate else best_a
-    idx = get_index(o, a)
-    if last_o is not None:
-        best_q = qvalues[idx][0] if idx in qvalues else -1  # initialize all qvalues
-        qvalues[get_index(last_o, last_a)] = (r + best_q, idx_o(o))
-    last_o, last_a = o, a
-    path.append(idx)
-    return a
-
-
-def update_done():
-    qvalues[get_index(last_o, last_a)] = (0, None)  # set the last reward
-    for n, i in enumerate(path[1::-1]):
-        o = qvalues[i][1][1:-1]
-        best_a = get_best_action(o, True)
-        best_q = qvalues[get_index([int(j) for j in o.split(',')], last_a, True)]
-        update = (qvalues[i][0] + 0.8**n*(-1 + best_q[0]))/2
-        qvalues[i] = (update, '('+o+')')
-
-
-def get_best_action(o, is_index=False):
-    values = []
-    for a in range(3):
-        idx = get_index(o, a) if not is_index else o
-        values.append(qvalues[idx] if idx in qvalues else (0, None))
-    return values.index(max(values,key=lambda item: item[0]))
-
-
-def get_index(o, a, no_transform=False):
-    return idx_o(o, no_transform)+str(a)
-
-
-def idx_o(o, no_transform=False):
-    if no_transform:
-        return str((o[0], o[1]))
+def take_action(observation, reward):
+    # 0 = back, 1 = nothing, 2 = front
+    global last_action, last_position, last_speed, last_index, last_precise_position, exploration_decay, exploration_rate
+    if last_action is None:
+        last_action = randint(0,2)
+        last_precise_position = observation[0]
+        last_position = discretize_position(last_precise_position)
+        last_speed = 0
+        last_index = get_index(last_position, last_speed)
+        all_qvalues[last_index] = [{'action' : last_action, 'qvalue' : reward, 'resulststate' : None}]
+        return last_action
     else:
-        return str((int(o[0] * 100), int(o[1] * 100)))
+        precise_position = observation[0]
+        position = discretize_position(precise_position)
+        speed = discretize_speed(calculate_speed(last_precise_position, precise_position))
+        index = get_index(position, speed)
+        last_index = get_index(last_position, last_speed)
+        exploration_rate *= exploration_decay
+        action = randint(0,2) if random() < exploration_rate else get_best_action(index)
+        update_state(last_index, last_action, reward+best_qvalue(index), index)
+        last_action, last_position, last_precise_position, last_index, last_speed = \
+            action, position, precise_position, index, speed
+        return action
 
-for i in range(episodes):
-    observation = env.reset()
-    reward = 0
-    done = False
-    timesteps = 0
-    if dynamic_exploration: exploration_rate = episodes / (2*(episodes-i))
-    while not done:
-        if slow and i == episodes-1: env.render()
-        action = take_action(timesteps, observation, reward)
-        observation, reward, done, info = env.step(action)
-        timesteps += 1
-    update_done()
-    print ("Episode {} finished after {} timesteps.".format(i, timesteps))
-    measurements.append(timesteps)
 
-avg_timesteps = sum(measurements)/len(measurements)
-#print(json.dumps(qvalues, indent=4, sort_keys=True))
-print("All {} episodes took {} on average".format(episodes, avg_timesteps))
+def update_state(index, action, qvalue, resultstate):
+    for a in all_qvalues[last_index]:
+        if a['action'] == action:
+            a['resultstate'] = resultstate
+            a['qvalue'] = qvalue
+            break
+    else:
+        all_qvalues[last_index].append({'action' : action, 'qvalue' : qvalue, 'resulststate' : resultstate})
 
-if not slow:
-    with open("results.txt", "a+") as fout:
-        fout.write("{} Exploration Rate {} AVG {} {}\n".format(VERSION, exploration_rate, avg_timesteps, measurements))
+
+def best_qvalue(index):
+    max_q = None
+    for a in all_qvalues[index]:
+        q = a['qvalue']
+        max_q = q if max_q is None or q > max_q else max_q
+    return max_q if max_q is not None else 0
+
+
+def calculate_speed(old_position, position):
+    return old_position-position
+
+
+def discretize_position(position):
+    return int(position*100)
+
+
+def discretize_speed(speed):
+    return int(speed*1000)
+
+
+def get_best_action(index):
+    values = {i: 0 for i in range(3)}
+    if index in all_qvalues:
+        for action in all_qvalues[index]:
+            values[action['action']] = action['qvalue']  # overrides default
+        return max(values.items(), key=operator.itemgetter(1))[0]
+    else:
+        all_qvalues[index] = []
+        return randint(0,2)
+
+
+def get_index(position, speed):
+    return position, speed
+
+
+def main():
+    global exploration_rate, measurements
+    for i in range(episodes):
+        observation = env.reset()
+        reward = 0
+        done = False
+        timesteps = 0
+        while not done:
+            if slow and i == episodes-1: env.render()
+            action = take_action(observation, reward)
+            observation, reward, done, info = env.step(action)
+            timesteps += 1
+        print ("Episode {} finished after {} timesteps.".format(i, timesteps))
+        measurements.append(timesteps)
+
+    avg_timesteps = sum(measurements)/len(measurements)
+    print("All {} episodes took {} on average".format(episodes, avg_timesteps))
+
+    if not slow:
+        with open("results.txt", "a+") as fout:
+            fout.write("{} Exploration Rate {} AVG {} {}\n".format(VERSION, exploration_rate, avg_timesteps, measurements))
+
+
+if __name__=='__main__':
+    main()

@@ -1,16 +1,20 @@
-import sys
-import gym
 import operator
 from random import random, randint
 
+import gym
+from bokeh.charts import output_file
+from bokeh.plotting import figure
+
+plot = False
+render_last = True
 env = gym.make("MountainCar-v0")
 VERSION = "V1.6"
 measurements = []
-exploration_rate = 0.0
+exploration_rate = 0.3
 exploration_decay = 0.999
-decay_rate = 1.0
-dynamic_exploration = False
-episodes = 300
+episodes = 100
+bucket_brigade_decay = 0.999
+stop_at = 150
 all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
 path = []
 last_action, last_position, last_precise_position, last_speed, last_index = [None for _ in range(5)]
@@ -28,10 +32,14 @@ def take_action(observation, reward):
     if last_action is None:
         action = randint(0, 2)
         last_index, last_action = index, action
-        all_qvalues[index] = [{'action': action, 'qvalue': reward, 'resulststate': None}]
+        all_qvalues[index] = [{'action': action, 'qvalue': reward, 'resultstate': None}]
     else:
         last_index = get_index(last_position, last_speed)
-        action = randint(0, 2) if random() < exploration_rate else get_best_action(index)
+        if random() < exploration_rate:
+            action = randint(0, 2)
+            all_qvalues[index] = []
+        else:
+            action = get_best_action(index)
 
     update_state(last_index, last_action, reward + best_qvalue(index), index)
     last_action, last_position, last_precise_position, last_index, last_speed = \
@@ -40,20 +48,38 @@ def take_action(observation, reward):
     return action
 
 
+def reverse_update():
+    for p in path:
+        index, action = p
+        for a in all_qvalues[index]:
+            part_reverse_update(a, index, action)
+
+
+def part_reverse_update(a, index, action):
+    if a['action'] == action:
+        resultstate = a['resultstate']
+        old_q = a['qvalue']
+        new_q = -1 + best_qvalue(resultstate)
+        qvalue = (old_q + bucket_brigade_decay * new_q) / 2
+        #qvalue = -2  # cruel optimization. Assume the best state that can be reached is -1
+        update_state(index, action, qvalue, resultstate)
+
+
 def update_state(index, action, qvalue, resultstate):
-    for a in all_qvalues[last_index]:
+    for a in all_qvalues[index]:
         if a['action'] == action:
             a['resultstate'], a['qvalue'] = resultstate, qvalue
             break
     else:
-        all_qvalues[last_index].append({'action': action, 'qvalue': qvalue, 'resulststate': resultstate})
+        all_qvalues[index].append({'action': action, 'qvalue': qvalue, 'resultstate': resultstate})
 
 
 def best_qvalue(index):
     max_q = None
-    for a in all_qvalues[index]:
-        q = a['qvalue']
-        max_q = q if max_q is None or q > max_q else max_q
+    if index in all_qvalues:
+        for a in all_qvalues[index]:
+            q = a['qvalue']
+            max_q = q if max_q is None or q > max_q else max_q
     return max_q if max_q is not None else 0
 
 
@@ -62,10 +88,12 @@ def calculate_speed(old_position, position):
 
 
 def discretize_position(position):
+    # -1.2 to 0.6
     return int(position * 100)
 
 
 def discretize_speed(speed):
+    # -0.07 to 0.07
     return int(speed * 1000)
 
 
@@ -84,24 +112,52 @@ def get_index(position, speed):
     return position, speed
 
 
+def plot_results():
+    output_file('plot.html')
+    position = [i[0] for i in all_qvalues]
+    speed = [i[1] for i in all_qvalues]
+    qvalues = [[j['qvalue'] for j in i] for i in all_qvalues.values()]
+    qvalues = [max(i) if len(i) > 0 else print(i) for i in qvalues]
+    df = {'Position': position, 'Speed': speed, 'QValues': qvalues}
+    # hm = HeatMap(df, x='Position', y='Speed', values='QValues', stat=None)
+    f = figure()
+    for p in position:
+        for s in speed:
+            idx = get_index(p, s)
+            if idx not in all_qvalues:
+                continue
+            q = all_qvalues[idx]
+            q = max([i['qvalue'] for i in q])
+            if q > -5:
+                f.circle(p, s)
+
+
 def main():
     global exploration_rate, measurements
+    last_iteration = False
     for i in range(episodes):
         observation = env.reset()
         reward, timesteps, done = 0, 0, False
         while not done:
-            if i == episodes - 1:
+            if last_iteration or (render_last and i == episodes - 1):
                 env.render()
             action = take_action(observation, reward)
             observation, reward, done, info = env.step(action)
             timesteps += 1
+        reverse_update()
         print("Episode {} finished after {} timesteps.".format(i, timesteps))
         measurements.append(timesteps)
+        if last_iteration:
+            break
+        if timesteps < stop_at:
+            last_iteration = True
 
     avg_timesteps = sum(measurements) / len(measurements)
-    print("All {} episodes took {} on average".format(episodes, avg_timesteps))
+    print("All {} episodes took {} on average".format(i+1, avg_timesteps))
     with open("results.txt", "a+") as fout:
         fout.write("{} Exploration Rate {} AVG {} {}\n".format(VERSION, exploration_rate, avg_timesteps, measurements))
+    if plot:
+        plot_results()
 
 
 if __name__ == '__main__':

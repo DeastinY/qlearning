@@ -11,7 +11,7 @@ exploration_rate = 0.0
 exploration_decay = 0.999
 decay_rate = 1.0
 dynamic_exploration = False
-episodes = 100
+episodes = 300
 all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
 path = []
 last_action = None
@@ -24,26 +24,27 @@ last_index = None
 def take_action(observation, reward):
     # 0 = back, 1 = nothing, 2 = front
     global last_action, last_position, last_speed, last_index, last_precise_position, exploration_decay, exploration_rate
+    precise_position = observation[0]
+    position = discretize_position(precise_position)
+    action, index, speed = None, None, None
+
     if last_action is None:
-        last_action = randint(0,2)
-        last_precise_position = observation[0]
-        last_position = discretize_position(last_precise_position)
-        last_speed = 0
-        last_index = get_index(last_position, last_speed)
-        all_qvalues[last_index] = [{'action' : last_action, 'qvalue' : reward, 'resulststate' : None}]
-        return last_action
+        action = randint(0, 2)
+        speed = 0
+        index = get_index(position, speed)
+        all_qvalues[index] = [{'action' : action, 'qvalue' : reward, 'resulststate' : None}]
     else:
-        precise_position = observation[0]
-        position = discretize_position(precise_position)
         speed = discretize_speed(calculate_speed(last_precise_position, precise_position))
         index = get_index(position, speed)
         last_index = get_index(last_position, last_speed)
         exploration_rate *= exploration_decay
         action = randint(0,2) if random() < exploration_rate else get_best_action(index)
         update_state(last_index, last_action, reward+best_qvalue(index), index)
-        last_action, last_position, last_precise_position, last_index, last_speed = \
-            action, position, precise_position, index, speed
-        return action
+
+    last_action, last_position, last_precise_position, last_index, last_speed = \
+        action, position, precise_position, index, speed
+    path.append((last_index, last_action))
+    return action
 
 
 def update_state(index, action, qvalue, resultstate):

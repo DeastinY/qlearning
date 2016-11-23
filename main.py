@@ -11,7 +11,7 @@ VERSION = "V1.6"
 measurements = []
 exploration_rate = 0.3
 exploration_decay = 0.999
-episodes = 10
+episodes = 15
 bucket_brigade_decay = 0.999
 stop_at = 150
 all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
@@ -119,7 +119,8 @@ def plot_results():
     f = figure()
     minq, maxq = get_q_range()
     count = 0
-    resolution = 10  # 1 = best, 10 = about 150 points
+    resolution = 1  # 1 = best, 10 = about 150 points
+    x, y, alpha = [], [], []
     drawn = set()
     for key, item in all_qvalues.items():
         p, s = key
@@ -130,8 +131,12 @@ def plot_results():
                 q = max(q)
                 count += 1
                 drawn.add(idx)
-                f.circle(p/100, s/1000, alpha = (q-minq)/(maxq-minq))
-    print(count)
+                x.append(p/100)
+                y.append(s/1000)
+                alpha.append((q-minq)/(maxq-minq))
+    print("Almost done !")
+    size = 0.01
+    f.rect(x, y, width=size, height=size/10, alpha=alpha, color="red")
     show(f)
 
 

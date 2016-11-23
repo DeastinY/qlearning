@@ -1,6 +1,7 @@
 import operator
+import asyncio
 from random import random, randint
-
+from multiprocessing.pool import ThreadPool
 import gym
 from bokeh.charts import output_file
 from bokeh.plotting import figure
@@ -13,16 +14,18 @@ measurements = []
 exploration_rate = 0.3
 exploration_decay = 0.999
 episodes = 100
-bucket_brigade_decay = 0.999
+bucket_brigade_discount = 0.999
 stop_at = 150
 all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
+state_relations = {}  # {'Resultstate' : ['(position, speed)', ... ]
 path = []
 last_action, last_position, last_precise_position, last_speed, last_index = [None for _ in range(5)]
 
 
 def take_action(observation, reward):
     # 0 = back, 1 = nothing, 2 = front
-    global last_action, last_position, last_speed, last_index, last_precise_position, exploration_decay, exploration_rate
+    global last_action, last_position, last_speed, last_index, \
+        last_precise_position, exploration_decay, exploration_rate
     precise_position = observation[0]
     position = discretize_position(precise_position)
     speed = 0 if last_action is None else discretize_speed(calculate_speed(last_precise_position, precise_position))
@@ -49,23 +52,42 @@ def take_action(observation, reward):
 
 
 def reverse_update():
+    # Do a complete reverse update of the path. Update the values of the path and every state that leads to one
+    # of the paths states. (Note to self : This can't be parallelized well, stupid !)
+    pool = ThreadPool(8)
+    loop = asyncio.get_event_loop()
     for p in path:
         index, action = p
-        for a in all_qvalues[index]:
-            part_reverse_update(a, index, action)
+        part_reverse_update(index, action, loop, pool, True)
 
 
-def part_reverse_update(a, index, action):
-    if a['action'] == action:
-        resultstate = a['resultstate']
-        old_q = a['qvalue']
-        new_q = -1 + best_qvalue(resultstate)
-        qvalue = (old_q + bucket_brigade_decay * new_q) / 2
-        #qvalue = -2  # cruel optimization. Assume the best state that can be reached is -1
-        update_state(index, action, qvalue, resultstate)
+@asyncio.coroutine
+def start_threads(pool, threading_data):
+    pool.map(part_reverse_update_star, threading_data)
+
+
+def part_reverse_update_star(raw_data):
+    part_reverse_update(*raw_data)
+
+
+def part_reverse_update(index, action, loop, pool, relation_update):
+    for a in all_qvalues[index]:
+        if a['action'] == action:
+            resultstate = a['resultstate']
+            old_q = a['qvalue']
+            new_q = -1 + best_qvalue(resultstate)
+            qvalue = (old_q + bucket_brigade_discount * new_q) / 2
+            update_state(index, action, qvalue, resultstate)
+    if relation_update:
+        previous_states = state_relations[index]
+        threading_data = [idx_act+(loop, pool, False) for idx_act in previous_states]
+        loop.run_until_complete(start_threads, )
 
 
 def update_state(index, action, qvalue, resultstate):
+    if resultstate not in state_relations:
+        state_relations[resultstate] = []
+    state_relations[resultstate].append((index, action))
     for a in all_qvalues[index]:
         if a['action'] == action:
             a['resultstate'], a['qvalue'] = resultstate, qvalue
@@ -133,7 +155,7 @@ def plot_results():
 
 
 def main():
-    global exploration_rate, measurements
+    global exploration_rate, measurements, path
     last_iteration = False
     for i in range(episodes):
         observation = env.reset()

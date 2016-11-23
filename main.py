@@ -2,17 +2,16 @@ import operator
 from random import random, randint
 
 import gym
-from bokeh.charts import output_file
-from bokeh.plotting import figure
+from bokeh.plotting import figure, show, output_file
 
-plot = False
-render_last = True
+plot = True
+render_last = False
 env = gym.make("MountainCar-v0")
 VERSION = "V1.6"
 measurements = []
 exploration_rate = 0.3
 exploration_decay = 0.999
-episodes = 100
+episodes = 10
 bucket_brigade_decay = 0.999
 stop_at = 150
 all_qvalues = {}  # { '(position, speed)': [{'action': {'Action' : A, 'Qvalue': Q, 'ResultState': (position, speed)]}}
@@ -31,6 +30,7 @@ def take_action(observation, reward):
 
     if last_action is None:
         action = randint(0, 2)
+        last_position, last_precise_position = - 0.5, -0.5
         last_index, last_action = index, action
         all_qvalues[index] = [{'action': action, 'qvalue': reward, 'resultstate': None}]
     else:
@@ -61,11 +61,13 @@ def part_reverse_update(a, index, action):
         old_q = a['qvalue']
         new_q = -1 + best_qvalue(resultstate)
         qvalue = (old_q + bucket_brigade_decay * new_q) / 2
-        #qvalue = -2  # cruel optimization. Assume the best state that can be reached is -1
         update_state(index, action, qvalue, resultstate)
 
 
 def update_state(index, action, qvalue, resultstate):
+    speed = index[1]/1000
+    if speed > 0.1:
+        return
     for a in all_qvalues[index]:
         if a['action'] == action:
             a['resultstate'], a['qvalue'] = resultstate, qvalue
@@ -114,22 +116,30 @@ def get_index(position, speed):
 
 def plot_results():
     output_file('plot.html')
-    position = [i[0] for i in all_qvalues]
-    speed = [i[1] for i in all_qvalues]
-    qvalues = [[j['qvalue'] for j in i] for i in all_qvalues.values()]
-    qvalues = [max(i) if len(i) > 0 else print(i) for i in qvalues]
-    df = {'Position': position, 'Speed': speed, 'QValues': qvalues}
-    # hm = HeatMap(df, x='Position', y='Speed', values='QValues', stat=None)
     f = figure()
-    for p in position:
-        for s in speed:
-            idx = get_index(p, s)
-            if idx not in all_qvalues:
-                continue
-            q = all_qvalues[idx]
-            q = max([i['qvalue'] for i in q])
-            if q > -5:
-                f.circle(p, s)
+    minq, maxq = get_q_range()
+    count = 0
+    resolution = 10  # 1 = best, 10 = about 150 points
+    drawn = set()
+    for key, item in all_qvalues.items():
+        p, s = key
+        idx = (int(p/resolution), int(s/resolution))
+        if idx not in drawn:
+            q = [i['qvalue'] for i in item]
+            if len(q) > 0:
+                q = max(q)
+                count += 1
+                drawn.add(idx)
+                f.circle(p/100, s/1000, alpha = (q-minq)/(maxq-minq))
+    print(count)
+    show(f)
+
+
+def get_q_range():
+    qvalues = [[j['qvalue'] for j in i if j['qvalue'] is not None] for i in all_qvalues.values()]
+    qmin = min([min(i) if i is not None and len(i) > 0 else 100000 for i in qvalues])
+    qmax = max([max(i) if i is not None and len(i) > 0 else -100000 for i in qvalues])
+    return qmin, qmax
 
 
 def main():
